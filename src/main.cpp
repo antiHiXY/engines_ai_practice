@@ -118,11 +118,141 @@ static std::vector<Position> find_path_a_star(const char *input, size_t width, s
   return std::vector<Position>();
 }
 
-void draw_nav_data(const char *input, size_t width, size_t height, Position from, Position to)
+std::vector<Position> prevPath;
+std::vector<Position> currentPathOnDraw;
+static std::vector<float> gScoreAra;
+static std::vector<Position> openListAra = {};
+std::vector<Position> nextIter;
+
+static std::vector<Position> find_path_ara_star(const char* input, size_t width, size_t height, Position from, Position to, float epsilon)
+{
+  if (from.x < 0 || from.y < 0 || from.x >= int(width) || from.y >= int(height))
+    return std::vector<Position>();
+
+  auto getG = [&](Position p) -> float { return gScoreAra[coord_to_idx(p.x, p.y, width)]; };
+
+  auto heuristic = [](Position lhs, Position rhs) -> float
+  {
+    return sqrtf(square(float(lhs.x - rhs.x)) + square(float(lhs.y - rhs.y)));
+  };
+
+  auto getF = [&](Position p) -> float
+  {
+    return getG(p) + epsilon * heuristic(p, to);
+  };
+
+  std::vector<Position> closedList;
+
+  while (!openListAra.empty())
+  {
+    size_t bestIdx = 0;
+    float bestScore = getF(openListAra[0]);
+    for (size_t i = 1; i < openListAra.size(); ++i)
+    {
+      float score = getF(openListAra[i]);
+      if (score < bestScore)
+      {
+        bestIdx = i;
+        bestScore = score;
+      }
+    }
+    if (getF(to) > getF(openListAra[bestIdx]))
+    {
+      Position curPos = openListAra[bestIdx];
+      currentPathOnDraw.push_back(curPos);
+      openListAra.erase(openListAra.begin() + bestIdx);
+      closedList.emplace_back(curPos);
+      auto checkNeighbour = [&](Position p)
+      {
+        // out of bounds
+        if (p.x < 0 || p.y < 0 || p.x >= int(width) || p.y >= int(height))
+          return;
+        size_t idx = coord_to_idx(p.x, p.y, width);
+        // not empty
+        if (input[idx] == '#')
+          return;
+        float weight = input[idx] == 'o' ? 10.f : 1.f;
+        float gScore = getG(curPos) + 1.f * weight; // we're exactly 1 unit away
+        if (gScore < getG(p))
+        {
+          prevPath[idx] = curPos;
+          gScoreAra[idx] = gScore;
+          bool found = std::find(closedList.begin(), closedList.end(), p) != closedList.end();
+          if (!found)
+          {
+            bool foundAra = std::find(openListAra.begin(), openListAra.end(), p) != openListAra.end();
+            if (!foundAra)
+              openListAra.emplace_back(p);
+          }
+          else
+          {
+            bool found = std::find(nextIter.begin(), nextIter.end(), p) != nextIter.end();
+            if (!found)
+              nextIter.emplace_back(p);
+          }
+        }
+      };
+      checkNeighbour({ curPos.x + 1, curPos.y + 0 });
+      checkNeighbour({ curPos.x - 1, curPos.y + 0 });
+      checkNeighbour({ curPos.x + 0, curPos.y + 1 });
+      checkNeighbour({ curPos.x + 0, curPos.y - 1 });
+    }
+    else
+    {
+      for (int i = 0; i < nextIter.size(); ++i)
+      {
+        bool found = std::find(openListAra.begin(), openListAra.end(), nextIter[i]) != openListAra.end();
+        if (!found)
+          openListAra.emplace_back(nextIter[i]);
+      }
+      nextIter.clear();
+      return reconstruct_path(prevPath, to, width);
+    }
+  }
+  return std::vector<Position>();
+}
+
+constexpr float eps_def = 5.0f;
+constexpr float eps_step = 0.5f;
+static float eps = eps_def;
+int next = 0;
+static std::vector<Position> lastPath;
+
+void draw_nav_sma_data(const char* input, size_t width, size_t height, Position from, Position to)
 {
   draw_nav_grid(input, width, height);
   std::vector<Position> path = find_path_a_star(input, width, height, from, to);
   draw_path(path);
+}
+
+void draw_nav_ara_data(const char* input, size_t width, size_t height, Position from, Position to, int& next)
+{
+  draw_nav_grid(input, width, height);
+  --next;
+  if (next < 0)
+  {
+    if (eps < 1.f || openListAra.empty())
+    {
+      eps = eps_def;
+      openListAra = { from };
+      size_t inpSize = width * height;
+      gScoreAra.clear();
+      gScoreAra.resize(inpSize, std::numeric_limits<float>::max());
+      gScoreAra[coord_to_idx(from.x, from.y, width)] = 0;
+      prevPath.clear();
+      prevPath.resize(inpSize, { -1,-1 });
+    }
+    next = 30;
+    eps -= eps_step;
+    currentPathOnDraw.clear();
+    lastPath = find_path_ara_star(input, width, height, from, to, eps);
+  }
+  for (int i = 0; i < currentPathOnDraw.size(); ++i)
+  {
+    size_t idx = coord_to_idx(currentPathOnDraw[i].x, currentPathOnDraw[i].y, width);
+    DrawPixel(currentPathOnDraw[i].x, currentPathOnDraw[i].y, Color{ uint8_t(gScoreAra[idx]), uint8_t(gScoreAra[idx]), 0, 100 });
+  }
+  draw_path(lastPath);
 }
 
 int main(int /*argc*/, const char ** /*argv*/)
@@ -169,11 +299,27 @@ int main(int /*argc*/, const char ** /*argv*/)
     {
       Position &target = from;
       target = p;
+      eps = eps_def;
+      openListAra = { from };
+      size_t inpSize = dungWidth * dungHeight;
+      gScoreAra.clear();
+      gScoreAra.resize(inpSize, std::numeric_limits<float>::max());
+      gScoreAra[coord_to_idx(from.x, from.y, dungWidth)] = 0;
+      prevPath.clear();
+      prevPath.resize(inpSize, { -1,-1 });
     }
     else if (IsMouseButtonPressed(1))
     {
       Position &target = to;
       target = p;
+      eps = eps_def;
+      openListAra = { from };
+      size_t inpSize = dungWidth * dungHeight;
+      gScoreAra.clear();
+      gScoreAra.resize(inpSize, std::numeric_limits<float>::max());
+      gScoreAra[coord_to_idx(from.x, from.y, dungWidth)] = 0;
+      prevPath.clear();
+      prevPath.resize(inpSize, { -1,-1 });
     }
     if (IsKeyPressed(KEY_SPACE))
     {
@@ -185,7 +331,7 @@ int main(int /*argc*/, const char ** /*argv*/)
     BeginDrawing();
       ClearBackground(BLACK);
       BeginMode2D(camera);
-        draw_nav_data(navGrid, dungWidth, dungHeight, from, to);
+      draw_nav_ara_data(navGrid, dungWidth, dungHeight, from, to, next);
       EndMode2D();
     EndDrawing();
   }
